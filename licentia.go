@@ -7,9 +7,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"embed"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,19 +20,40 @@ import (
 	"time"
 
 	"github.com/docopt/docopt-go"
+	"github.com/google/renameio/v2"
 	"github.com/ryanuber/go-license"
-
-	_ "github.com/c4milo/licentia/statik"
-	"github.com/rakyll/statik/fs"
 )
 
-//go:generate go get github.com/rakyll/statik
-//go:generate statik -f -src licenses
+//go:generate go generate ./licenses
 
 var Version string
+
+//go:embed licenses/*.text licenses/*.header licenses/*.copyright
+var licensesFS embed.FS
 var statikFS http.FileSystem
 
+func init() {
+	subFS, err := fs.Sub(licensesFS, "licenses")
+	if err != nil {
+		panic(err)
+	}
+	statikFS = http.FS(subFS)
+}
+
 func main() {
+	var buf strings.Builder
+	ss, err := List()
+	if err != nil {
+		panic(err)
+	}
+	for i, s := range ss {
+		fmt.Fprintf(&buf, "\t* %s", s)
+		if i%3 == 2 {
+			buf.WriteByte('\n')
+		}
+	}
+	slt := buf.String()
+
 	usage := `Licentia.
 
 Usage:
@@ -45,11 +67,7 @@ Usage:
 
 Supported license types:
 
-* apache2   * gpl3       * gpl2
-* mpl2      * cddl       * unlicense
-* mit       * epl
-* newbsd    * freebsd
-* lgpl3     * lgpl2
+` + slt + `
 
 Actions:
   set                Sets a license header to the specified files
@@ -72,10 +90,6 @@ Options:
 
 	args, err := docopt.Parse(usage, nil, true, Version, false)
 	if err != nil {
-		panic(err)
-	}
-
-	if statikFS, err = fs.New(); err != nil {
 		panic(err)
 	}
 
@@ -187,13 +201,13 @@ func Dump(ltype LicenseType, owner string) (string, error) {
 		"@@owner@@", owner,
 		"@@year@@", strconv.Itoa(time.Now().Year()),
 	)
-	data, err := Asset(filepath.Join("licenses", string(ltype)))
+	data, err := Asset(filepath.Join("licenses", string(ltype)+".text"))
 	if err != nil {
 		return "", err
 	}
 
 	lcopyright, _ := Asset(filepath.Join("licenses", string(ltype)+".copyright"))
-	data = append(lcopyright, data...)
+	data = append(append(lcopyright, '\n'), data...)
 
 	return replacer.Replace(string(data)), nil
 }
@@ -283,7 +297,7 @@ func removeLicense(filename string, config *Config) error {
 
 	license := lbuffer.String()
 
-	licensedFile, err := ioutil.ReadFile(filename)
+	licensedFile, err := os.ReadFile(filename)
 	buf := bytes.NewBuffer(licensedFile)
 	unlicensedFile := bytes.NewBuffer(nil)
 
@@ -318,7 +332,7 @@ func removeLicense(filename string, config *Config) error {
 	if err == nil {
 		mode = fi.Mode()
 	}
-	return ioutil.WriteFile(filename, []byte(unlicensedData), mode)
+	return renameio.WriteFile(filename, []byte(unlicensedData), mode)
 }
 
 // Inserts license header to file represented by filename
@@ -364,7 +378,7 @@ func insertLicense(filename string, replacer *strings.Replacer, config *Config) 
 		return err
 	}
 
-	return ioutil.WriteFile(filename, licensedFile.Bytes(), 0640)
+	return renameio.WriteFile(filename, licensedFile.Bytes(), 0640)
 }
 
 // Prepends end-of-line comment to newdata and returns it in licensedFile
@@ -403,10 +417,10 @@ func List() ([]string, error) {
 
 	types := make([]string, 0, len(licenses))
 	for _, l := range licenses {
-		if strings.HasSuffix(l, "header") || strings.HasSuffix(l, "copyright") {
+		if !strings.HasSuffix(l, ".text") {
 			continue
 		}
-		types = append(types, l)
+		types = append(types, l[:len(l)-5])
 	}
 	return types, nil
 }
@@ -521,7 +535,7 @@ func Asset(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer fh.Close()
-	return ioutil.ReadAll(fh)
+	return io.ReadAll(fh)
 }
 
 func AssetDir(path string) ([]string, error) {

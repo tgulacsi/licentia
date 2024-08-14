@@ -43,7 +43,7 @@ release: dist
         git pull
 
 licenses:
-	go-bindata -o=licenses.go licenses
+	go generate ./licenses
 
 .PHONY: compile build licenses install test release deps
 
